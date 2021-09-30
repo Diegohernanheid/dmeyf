@@ -1,0 +1,490 @@
+---
+title: "Ensambles: Sofisticando los algoritmos "
+date: "2021-09-13"
+version: 0.7
+output: 
+  html_document:
+    theme: spacelab
+    highlight: monochrome
+    df_print: paged
+#    toc: true
+#    toc_depth: 2
+vignette: >
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{css, echo=FALSE}
+.tarea {
+  padding: 1em;
+  border: 2px solid red;
+  border-radius: 10px;
+  margin-bottom: 10px;
+}
+```
+
+> Hay quienes pasan por el bosque y sólo ven leña para el fuego
+>
+> --- León Tolstoi
+
+Son muchos los caminos que nos lleva esta materia.Un en particular es una escalera, que busca ir incrementando la performance de nuestros modelos, mejorando con pequeños.
+No todos los peldaños son del mismo tamaño, particularmente el de la clase de hoy, nos elevará como ninguna otra técnica.
+Hablaremos de los algoritmos basados en ensambles.
+
+Pero antes de que nada, un repaso.
+
+**Preguntas**
+
+-   ¿Qué es un ensamble de modelos?
+
+-   ¿Cómo tienen que ser los modelos dentro de un ensamble?
+
+-   ¿Qué técnicas conoce para ensamblar modelos?
+
+-   ¿Por qué funcionan mejor los ensambles?
+
+Los ensambles pueden partir de modelos ya desarrollados, de modelos que se creen especialmente para ser ensamblados.
+
+Hoy pondremos atención a los segundos, sin olvidarnos que durante la cursada, generaremos múltiples modelos que quien nos dice, sean útiles para un *super* ensamble.
+
+El primer tipo de algoritmo que veremos son los de **bagging** (bootstrap aggregating).
+Estos consisten en
+
+-   Hacer **N** nuevos conjunto de entrenamiento usando boostraping, o sea, reemplazar nuestro dataset por elementos aleatorios con reemplazo.
+
+-   Para este cada nuevo dataset obtener un modelo.
+
+-   Promediar las salidas de los modelos.
+
+El espíritu detrás de este algoritmo, puede entenderse en que cada modelo es una especialista de sólo una parte, y la suma de muchos especialistas consiguen un buen modelo.
+
+El algoritmo de **bagging** más conocido es el **random forest** que ustedes ya conocen.
+
+Probemos como funciona un **rf**, en nuestro conjunto de datos.
+
+Primero carguemos todo
+
+```{r}
+
+rm( list=ls() )
+gc(verbose = FALSE)
+```
+
+```{r}
+library( "data.table")
+library("ggplot2")
+
+#CARGO DATOS DE ENTRENAMIENTO? (SEPTIEMBRE-2020): NO, NO SON ENTRENAMIENTO: ES TODO DESARROLLO: SE VA A DIVIDIR EN TRAIN Y TEST!!!
+carpeta_datasetsOri =  "C:/DIEGO_/MASTER_DM/2_CUAT_2021/DM_ECON_FINANZAS/datasetsOri/"
+septiembre = "paquete_premium_202009.csv"
+ds = fread(paste0(carpeta_datasetsOri, septiembre,collapse = ""), header=TRUE, showProgress = FALSE)
+ds$clase_binaria = factor(ifelse(ds$clase_ternaria == "BAJA+2", 1, 0))
+ds$clase_ternaria = NULL
+View(ds)
+# Solo usaremos 5
+semillas = as.vector(unlist(fread("C:/DIEGO_/MASTER_DM/2_CUAT_2021/DM_ECON_FINANZAS/work/SEMILLAS_MIAS.txt")))  # MIS SEMILLAS!
+#[1:5]
+View(semillas)
+
+```
+
+A la hora de trabajar con este precioso algoritmo necesitamos una librería.
+La gran mayoría son malas, no pueden trabajar con datos ausentes... sí!
+a pesar de trabajar con árboles, no pueden trabajar con datos ausentes...
+
+Pero bueno, aprovechemos esta experiencia al máximo, cerremos los ojos y usemos la librería **ranger**.
+
+```{r}
+
+library(caret)
+library(ranger)  # LIBRERIA PARA RANDOM FOREST: XXX NO SOPORTA N/A !!!!! XXXXXX
+library(randomForest)
+
+set.seed(semillas[1]) # LE SETEO SOLO 1 SEMILLA O TODAS??????: LE SETEO SOLO UNA!!!! XXXX
+#View(semillas[1]) XXXX LE SETEO SOLO UNA!!!! XXXX
+
+train_casos = createDataPartition(ds[,get("clase_binaria")], p = 0.7, list = FALSE) # EL get("clase_binaria") QUE FUNCION CUMPLE???? ES PARA ESTRATIFICAR????????
+ds_train  =  ds[  train_casos, ]
+ds_test   =  ds[ -train_casos, ]
+
+
+
+##
+## ranger no soporta, como lo hacen otras librerías, los missing values
+## 
+ds_train =  na.roughfix( ds_train ) # IMPUTA N/As POR MEDIANAS (NUMERICAS) Y MODAS (CAT/FACTOR).
+ds_test =  na.roughfix( ds_test )   # IMPUTA N/As POR MEDIANAS (NUMERICAS) Y MODAS (CAT/FACTOR).
+#View(ds_test)
+
+# Recomendación: 
+variables = round(sqrt(dim(ds)[2]-1)) # USO LA RAIZ CUAD DE LA CANT TOTAL DE VARIABLES MENOS LA ULTIMA COLUMNA TARGET
+dim(ds)  # 235354 FILAS   158 COLS
+dim(ds)[2]  # 158
+#View(ds)
+
+t0 = Sys.time()  # TIEMPO AHORA: CUANDO COMIENZA A EJECUTAR EL MODELO
+#View(Sys.time()) # TIEMPO AHORA
+
+#### ***ENTRENO MODELO:
+modelo_rf_1 = ranger(clase_binaria ~ ., data = ds_train, # ranger: RANDOM FOREST: PREDIGA CLASE BINARIA USANDO TODAS LAS DEMAS VARIABLES, CON DATOS DE ENTRENAMIENTO.
+                  probability=TRUE, 
+                  num.trees=100,     # 100 ARBOLES
+                  min.node.size=10,  # CON 10 ELEMENTOS SOBRANTES EN UN NODO YA FRENA???? (POR ESO TIRA PROBABILIDAD Y NO CLASE)
+                  mtry=variables,  # numero de variables -> RECORDAR CUANDO UNO AGREGA MAS VARS: CADA VEZ QUE ABRE UNA NUEVA RAMA (O CADA NUEVO ARBOL???), TOMA SOLO 13 VARIABLES AL AZAR.
+                  splitrule="gini",
+                  sample.fraction = 0.66, # CADA VEZ QUE ABRE UNA NUEVA RAMA (O CADA NUEVO ARBOL???), TOMA SOLO 66% DE LOS DATOS AL AZAR.
+                  importance = "impurity",
+                  verbose=TRUE)	
+##### XXXX ****PREGUNTA: EN PYTHON NO SE USA EL "fit" PARA ENTRENAR UN MODELO??? (SE HIPERPARAMETRIZA EL MODELO POR SEPARADO Y DESPUES SE FITEA APARTE CON LOS DATOS DE ENTRENAMIENTO)
+
+#### PREGUNTA 2: LA SEMILLA NO SE SETEA ADENTRO DEL MODELO???? (EN PYTHON NO SE SETEABA ADENTRO???)
+
+t1 = Sys.time() # TIEMPO AHORA: CUANDO TERMINO DE EJECUTAR EL MODELO!!!
+tiempo =  as.numeric(  t1 - t0, units = "secs") # CALCULO LAPSO DE TIEMPO QUE TARDO EL MODELO!!!
+print(paste0("Tiempo de ajuste Random Forest: " , round(tiempo,2), " seg", collapse = " "))
+####  "Tiempo de ajuste Random Forest: 28.61 seg": A PESAR DE SER LA MISMA SEMILLA, AL EJECUTARLO DE NUEVO TARDO UN TIEMPO DISTINTO!!!!! (27.93 SEG VS 28.61 SEG).
+```
+
+
+Revisemos primero la performance del modelo en `train` y `test` sobre la **auc**:
+
+```{r}
+### ****MEDICION DE LA PERFORMANCE DEL MODELO!!!!:
+library(ROCR)
+
+pred_train = predict(modelo_rf_1, ds_train) # CON EL MODELO YA ENTRENADO, PREDIGO DATOS ENTRENAMIENTO
+pred_test = predict(modelo_rf_1, ds_test) # CON EL MODELO YA ENTRENADO, PREDIGO DATOS TEST
+#View(pred_train)
+#View(pred_train$predictions)
+
+roc_pred_test =  ROCR::prediction(pred_test$predictions[,"1"], ds_test[,"clase_binaria"], label.ordering=c(0, 1))  ### XXX pred_test$predictions[,"1"] TIENE PROBABILIDADES (DECIMALES) Y ds_test[,"clase_binaria"] TIENE 0 O 1 !!! XXXX COMO VA A ENCONTRAR COINCIDENCIAS COMPARANDO ESO???? (PARA HACER LA CURVA ROC CON TRUE POSITIVES, ETC??) XXXXX ???????????
+
+#### XXX ADEMAS NO ENTIENDO COMO CALCULA TODA UNA CURVA ROC CON TAN SOLO UN DATASET DE PREDICCIONES (pred_test$predictions[,"1"]) Y UNO DE LABELS (ds_test[,"clase_binaria"]), CUANDO LAS PREDICCIONES SALEN DE UN SOLO MODELO YA HIPERPARAMETRIZADO Y ENTRENADO. XXXXXX 
+#### XXXX VER CURVA ROC XXXX ####
+
+auc_t_test =  ROCR::performance( roc_pred_test,"auc"); 
+auc_test = unlist(auc_t_test@y.values)   # QUE HACE ESTO?????
+
+roc_pred_train =  ROCR::prediction(pred_train$predictions[,"1"], ds_train[,"clase_binaria"], label.ordering=c(0, 1))  # XXX OTRA VEZ: COMO COMPARA PROBABILIDADES EN DECIMALES CON 0 Y 1 ????
+auc_t_train =  ROCR::performance( roc_pred_train,"auc"); 
+auc_train = unlist(auc_t_train@y.values)  # QUE HACE ESTO?????
+  
+print(paste0("train ", auc_train))  ### NO ENTIENDO COMO CALCULO ESTO XXXX
+print(paste0("test ", auc_test))    ### NO ENTIENDO COMO CALCULO ESTO XXXX
+```
+
+Wow!
+¿Qué paso en `train`?
+
+Veamos a continuación algo muy útil de los \`RF.
+La importancia de variables:
+
+```{r}
+#View(modelo_rf_1)
+importancia = as.data.table(modelo_rf_1$variable.importance,keep.rownames = TRUE) # EL MODELO ADENTRO YA TIENE UNA COLUMNA DE VARIABLE IMPORTANCE!!! ### EL as.data.table TRANSFORMA LOS NOMBRES DE LAS FILAS EN UNA NUEVA COLUMNA (POR ESO LE PUSO EL keep.rownames = TRUE)!!!!!
+colnames(importancia) = c("variable", "importancia") # A LA NUEVA COLUMNA CON LOS NOMBRES CREADA POR EL as.data.table SE LE PONE DE NOMBRE "variable". Y A LA COLUMNA DE VALORES ORIGINAL SE LE PONE DE NOMBRE "importancia"
+setorder(importancia, -importancia) # ESTO QUE HACE??? (ORDENA DE MAYOR A MENOR???)
+importancia
+
+```
+
+**Preguntas** \* ¿Qué significa que una variable sea más importante que otra?
+\* ¿Qué significa que una variable tenga 0 importancia?
+¿Con el **RF** es suficiente como para descartarlas?
+\* ¿Qué una variable tenga algo de importancia es suficiente como para entender que da valor?
+
+Hagamos un experimento
+
+```{r}
+set.seed(semillas[2])
+ds_train$canario = runif(nrow(ds_train)) # runif generates random deviates (DISTRIBUCION UNIFORME!!!): GENERO UNA VARIABLE ADICIONAL ("canario") CON VALORES RANDOM UNIFORMES.
+
+modelo_rf_2 <- ranger( clase_binaria ~ ., data = ds_train, 
+                  probability=TRUE, 
+                  num.trees=150,
+                  min.node.size=10, 
+                  mtry=variables,
+                  splitrule="gini",
+                  importance = "impurity",
+                  verbose=TRUE)	
+```
+
+```{r}
+
+importancia <- as.data.table(modelo_rf_2$variable.importance,keep.rownames = TRUE)
+colnames(importancia) <- c("variable", "importancia")
+setorder(importancia, -importancia)
+importancia
+
+
+# importancia[variable == "canario"]
+
+### CANARIO SALIO TERCERA: LO QUE PUEDE ESTAR PASANDO ES QUE, COMO SON MUCHAS FILAS, CANARIO ESTE REPITIENDO VALORES (DEPENDE DE COMO FUNCIONE LA FUNCION DE RANDOM runif): ESA REPETICION PODRIA IMPACTAR EN LOS CLASE "0" (QUE SON LOS MAS NUMEROSOS), CREANDO UNA FALSA IMPORTANCIA PREDICTORA DE CANARIO SOBRE ESA CLASE "0". SI, SEGURO ESO ES LO QUE SUCEDE: SI TIRAMOS UN DADO (UNIFORME), EL NUMERO 6 QUIZAS SALGA MUCHAS VECES EN LAS CLASE 0, PERO NINGUNA VEZ EN LA CLASE 1 (BAJA+2), YA QUE SON MUY POCOS REGISTROS. ESO EXPLICARIA LA FALSA "PREDICCION" DEL VALOR DEL DADO SOBRE LAS CLASES.
+unique(table(ds_train$canario)[2]) # NO, ME CAGO!!: APARECE SOLO UNA VEZ CADA VALOR RANDOM!!!
+### OTRA EXPLICACION PODRIA SER: QUE AUNQUE NO HAYA VALORES REPETIDOS, SI HAYA VALORES CERCANOS EN MAYOR CANTIDAD EN LOS CLASE 0 QUE EN LOS BAJA+2 (PORQUE AL TENER UN RANGO ACOTADO, CUANTOS MAS VALORES, MAS CERCA VAN A TERMINAR ESTANDO UNO DEL OTRO).
+
+```
+
+What?
+
+-   ¿Qué sucedió?
+-   ¿Qué hago?
+-   <https://www.youtube.com/watch?v=86URGgqONvA> ???
+
+Resta sin lugar a dudas un importante trabajo de parametrización, al igual que medir los modelos con la función de *ganancia* y no sólo con el *auc*.
+Sin embargo dejaremos estos pasos al alumno con curiosidad de ver y entender porque este precioso algoritmo es de elite, aunque ya no más, el mejor.
+
+Break time
+
+$$\\[3in]$$
+
+Continuamos con los ensambles de boosting.
+Estos se construyen de forma serial.
+Primero se parte de un modelo (que puede ser un valor constante) y se complementa con un modelo que busca mejorar al anterior.
+
+Hay dos algoritmos muy conocidos de este tipo:
+
+-   **Adaboost**: Que cada nuevo modelo va mejorando a los anteriores poniendo un peso mayor en los casos donde la clasificación es incorrecta
+
+-   **Gradient Boosting**: Que cada nuevo modelo va mejorando los anteriores, tratando de corregir los residuos, buscando estos últimos con el gradiente de una función de perdida.
+
+Este último se empezó a hacer muy popular por la excelente pieza de tecnología que es su implementación **xgboost**.
+Podemos entender un poco más de esta implementación
+
+-   [Tutorial](https://xgboost.readthedocs.io/en/latest/tutorials/model.html)
+
+-   [Parámetros](https://xgboost.readthedocs.io/en/latest/parameter.html)
+
+Veamos como usarlo para a paso para nuestro problema
+
+-   Primero tenemos que serializar los datos:
+
+```{r}
+### GRADIENT BOOSTING:
+library(xgboost)
+
+clases = as.numeric(ds$clase_binaria) - 1  # SI NO PONGO EL -1: PONE LOS 0 COMO 1 Y LOS 1 COMO 2 !!!!!! (POR QUE????????)
+#View(ds)
+#View(clases)
+ds$clase_binaria = NULL  # ELIMINO LA COLUMNA DE LA CLASE TARGET !!!!!
+
+dtrain   = xgb.DMatrix( data = data.matrix(ds),  label = clases, missing=NA )
+# View(dtrain) # OBJETO MATRIZ!!
+# SE LE DAN LOS DATOS COMO UNA MATRIZ Y LAS LABELS POR SEPARADO!!!! (POR ESO SE ELIMINO LA COLUMNA DE LA CLASE TARGET!!!)
+```
+
+La librería nos incluye la posibilidad de hacer **cv**, sin necesidad de código adicional, vemos rápidamente en que consisten los parámetros y ejecutemos el primer ajuste.
+
+```{r}
+set.seed(semillas[1])
+t0 <- Sys.time()
+# MODELO DE GRADIENT BOOSTING CON CROSS VALIDATION INCORPORADO!!!:
+modelo1 = xgb.cv( 
+  
+				data = dtrain,  # MATRIZ DE DATOS + LABELS
+				missing = NA,
+				stratified = TRUE,       
+				
+				nround= 20,
+				nfold = 5,
+				
+				watchlist = list(metric='auc'),
+				early_stopping_rounds = 5,  # PARA QUE FRENE SI 5 RONDAS SEGUIDAS NO OBTIENE GANANCIA: IGUAL ACA ESTA SETEADO CON AUC EN VEZ DE GANANCIA??? COMO LO SETEO CON GCIA???
+				#(FRENA SI 5 RONDAS SEGUIDAS NO MEJORA EL AUC???????)
+				# feval = ganancia,  # VER COMO SETEARLE LA GCIA PARA EVALUACION!! XXX
+				eval_metric= "auc",
+				
+				maximize =TRUE,
+				subsample = 1, 
+	 			colsample_bytree = 1, # USA EL 100% DE LAS COLUMNAS
+		    eta = 0.3,  # LEARNING RATE = 0.3
+ 				min_child_weight = 1, 
+	 			max_depth = 6,  # MAX PROFUNDIDAD DE LOS ARBOLES
+		 		alpha = 0, # REGULADOR DE COMPLEJIDAD: EN 0 ESTA DESACTIVADO!!!
+				lambda = 0, # REGULADOR DE COMPLEJIDAD: EN 0 ESTA DESACTIVADO!!!
+				base_score = sum(clases) / length(clases), # QUE ES ESTO????? ME VA A DAR EL % DE LABELS CLASIFICADAS COMO 1 (BAJA+2) SOBRE EL TOTAL.
+
+ 				objective="binary:logistic", # ???????
+				
+				verbose = 2
+			)
+
+t1 <- Sys.time()
+
+print(paste0("El tiempo que tardó en ajustar XGB es: ", round(as.numeric(  t1 - t0, units = "secs"),2), " sec ", collapse = " "))
+# "El tiempo que tardó en ajustar XGB es: 72.99 sec "
+### LO QUE NO SE ES CUANTOS ARBOLES EN SERIE PONE EN CADA RONDA????
+# ME PARECE QUE CADA ITERACION ES 1 ARBOL QUE SE SUMA. EN TOTAL SON 20 ARBOLES EN SERIE!!!
+### POR QUE NO SETEARLE QUE LAS 5 RONDAS QUE NO MEJORA SEAN LAS DE TEST, EN VEZ DE LAS DE TRAIN????? (Y EVITAS EL OVERFITTING!!!): NOOOOOOOOO. SOLO DETECTA CUAL FUE LA MEJOR ITERACION!!!!! (LA DE MAS ALTO TEST AUC!!!!!!!)
+```
+
+Veamos el modelo resultante
+
+```{r}
+modelo1$best_iteration  # SOLO DETECTA CUAL FUE LA MEJOR ITERACION (LA 18)!!!!! (LA DE MAS ALTO TEST AUC!!!!!!!) test-auc:0.861493+0.024450 (EL MODELO ANTERIOR ranger DE RANDOM FOREST HABIA DADO: "test 0.837126809998153")
+modelo1$best_ntreelimit  # ME PARECE QUE CADA ITERACION ES 1 ARBOL QUE SE SUMA. EN TOTAL SON 20 ARBOLES, Y PERFORMA MEJOR SI LLEGA HASTA EL ARBOL 18 Y PARA.
+```
+
+¿No es interesante que con una simple ejecución con casi todos parámetros por *default* ya estamos con un mejor modelo?
+Y a su vez, tardó menos un **cv** que lo que tarda hacer 1 árbol en **rpart**.
+
+Probemos sumando dos HIPER-parámetros más:
+
+```{r}
+
+set.seed(semillas[1])
+t0 <- Sys.time()
+
+modelo1 <- xgb.cv( 
+				data = dtrain,  
+				missing = NA,
+				stratified = TRUE,       
+				nround= 20,
+				nfold = 5,
+				watchlist = list(metric='auc'),
+				early_stopping_rounds = 5,
+				eval_metric= "auc",
+				maximize =TRUE,
+				subsample = 1, 
+	 			colsample_bytree = 1, 
+		    eta = 0.3,
+ 				min_child_weight = 1, 
+	 			max_depth = 6,
+		 		alpha = 0, 
+				lambda = 0, 
+ 				objective="binary:logistic",
+				####
+				tree_method = "hist",   # QUE ES????
+				grow_policy="lossguide",  # QUE ES???? PERO MEJORAN LA PERFORMANCE UN MONTON!!!!
+				####
+				verbose = 2
+			)
+
+t1 <- Sys.time()
+
+print(paste0("El tiempo que tardó en ajustar XGB es: ", round(as.numeric(  t1 - t0, units = "secs"),2), " seg", collapse = " "))
+#  "El tiempo que tardó en ajustar XGB es: 17.78 seg"
+```
+```{r}
+modelo1$best_iteration  ### SUBIO LA PERFORMANCE DE 0.86 A 0.88 !!!!!
+modelo1$best_ntreelimit  
+```
+
+Ahora, no solo dio más rápido, sino incluso *algo* mejor.
+
+**Pregunta**
+
+-   ¿Por qué se dio ese diferencia tan grande de tiempos?
+
+Hasta ahora veníamos midiendo la calidad de los parámetros, vemos como obtener el modelo final:
+
+```{r}
+# CREO EL MEJOR MODELO, USANDO LA MEJOR RONDA DE CORTE (HASTA QUE NRO DE ARBOL EN SERIE TIENE QUE PONER: 18) Y USANDO TODOS LOS DATOS DE ENTRENAMIENTO SIN CV (?)
+modelo_xgb_1 = xgb.train(  
+				data = dtrain,
+				nround= 18, # poner la mejor ronda
+				objective="binary:logistic",
+			  verbose = 2
+			)
+## Y LOS DEMAS HIPERPARAMETROS????????
+## Y COMO VEO LA PERFORMANCE?????????? (Y VER SI DA IGUAL QUE LA DE LA RONDA 18 ANTERIOR)
+```
+
+
+```{r}
+
+noviembre <- "paquete_premium_202011.csv" #  CARGO DATASET DE APLICACION DEL MODELO!!!! (PARA SUBIR A KAGGLE!!!!)
+
+ds_nov <- fread(paste0(carpeta_datasetsOri, noviembre,collapse = ""), header=TRUE, showProgress = FALSE)  # GENERO DATASET DE DATOS NOVIEMBRE (APLICACION)
+ds_nov$clase_ternaria <- NULL # ELIMINO COLUMNA VACIA TARGET
+
+pred_nov = predict(modelo_xgb_1, data.matrix(ds_nov),  type = "prob") # PREDIGO CON MATRIZ: DATOS NOVIEMBRE (APLICACION), SIN LABELS!!!!!: PORQUE AHORA PREDICE, NO ENTRENA!!!
+
+length(unique(pred_nov))  # 32184: PORQUE SON PROBABILIDADES!!!!!!!!
+#View(ds_nov) # Showing 1 to 12 of 238,986 entries, 157 total columns
+#View(pred_nov) SON TODOS NUMERITOS DECIMALES DE PROBABILIDADES!!!!
+```
+
+Y si queremos generar el archivo de envío a **kaggle**
+
+```{r}
+#Genero la entrega para Kaggle
+entrega  <- as.data.table( list( "numero_de_cliente"= ds_nov[, numero_de_cliente],
+                                 "Predicted"= as.numeric(pred_nov > 0.025) ) ) # AL PONERLE AS.NUMERIC TRANSFORMAS LOS DECIMALES EN ENTEROS: LOS MAYORES DE 0.025 SE TRANSFORMARAN EN 1, Y LOS DEMAS EN 0.
+View(entrega)
+
+# GENERO ARCHIVO DE ENTREGA, PARA LUEGO SUBIR AL KAGGLE:
+fwrite( entrega, file="C:/DIEGO_/MASTER_DM/2_CUAT_2021/DM_ECON_FINANZAS/kaggle/K_ENSAMBLES_01.csv", sep="," )
+```
+
+
+#### VER COMBINACION CON BAYESIANO!!!!!:
+Pero antes de siquiera pensar en subir algo, tenemos varias cosas por hacer.
+
+Ahora exploramos algunos de los otros atributos que tiene el paquete `XGBoost`, el primero es la importancia de variables:
+
+```{r}
+
+xgb.importance(colnames(dtrain), model = modelo_xgb_1)
+
+```
+
+-   ¿Qué diferencias nota con respecto con la importancia de variables del **rf**?
+
+Juguemos una vez más con una variable canario:
+
+```{r}
+ds_can <- ds
+ds_can$canario <- runif(nrow(ds))
+
+dtrain2   <- xgb.DMatrix( data = data.matrix(ds_can),  label = clases, missing=NA )
+
+
+modelo_xgb_2 <- xgb.train( 
+				data = dtrain2,
+				nround= 20,
+				maximize =TRUE,
+				objective="binary:logistic",
+				tree_method = "hist",
+				grow_policy="lossguide",
+			  verbose = 2
+			)
+
+
+```
+
+Veamos en que posición aparece la variable canario:
+
+```{r}
+xgb.importance(colnames(dtrain2), model = modelo_xgb_2)
+```
+
+Vemos un menor sobreajuste en la configuración por defecto del `XGBoost` que la del `RF`.
+Sin embargo, todavía hay y reducir ese sobreajuste puede sumarnos mucho valor.
+
+**Pregunta**
+
+-   ¿Cuáles son los parámetros que nos ayudan a controlar el `overfitting`?
+
+::: {.tarea}
+**TAREA (si hay tiempo, lo empezamos en clase)**
+
+Usando los retazos de código de los R markdown, escribir 2 script en R
+
+-   Una búsqueda bayesiana para un **xgboost**
+
+-   Aplicar el mejor modelo y obtener una entrega para **kaggle**
+
+Luego subir la entrega a **kaggle**, subir los scripts a <https://gist.github.com/> y compartirlos en chat de la clase.
+:::
+
+En la clase revisamos las formas de construir algoritmos basados en ensambles.
+Hay un ensamble que les puede ser muy útil en esta primera competencia (y también en la segunda), el **stacking**.
+Iremos hablando de esta técnica en las siguientes clases, pero anticipamos que esta técnica responde a la pregunta:
+
+Hice muchos modelos para la competencia, hay una forma inteligente de ensamblarlos?
+
+------------------------------------------------------------------------
